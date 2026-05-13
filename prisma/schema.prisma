@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id       Int    @id @default(autoincrement())
+  username String @unique
+  password String 
+  name     String
+  role     String @default("Nhân viên") // Quản lý, Nhân viên
+}
+
+model CoffeeTable {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  type        String   @default("table") // "table" hoặc "bar"
+  capacity    Int
+  status      String   @default("Trống") // Trống, Đang phục vụ, Đã đặt
+  area        String   @default("Bên trong") // Bên trong, Bên ngoài, Lầu 1...
+  posX        Int      @default(0) // Tọa độ X để xếp vị trí (0-100% hoặc theo grid)
+  posY        Int      @default(0) // Tọa độ Y để xếp vị trí (0-100% hoặc theo grid)
+  orientation String   @default("horizontal") // horizontal hoặc vertical
+  orders      Order[]
+}
+
+model Category {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique
+  products Product[]
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String
+  categoryId  Int
+  category    Category @relation(fields: [categoryId], references: [id])
+  price       Float
+  status      String   @default("Sẵn sàng") // Sẵn sàng, Hết hàng
+  imageUrl    String?  @db.Text // Đường dẫn hình ảnh hoặc URL
+  description String?  @db.Text // Mô tả chi tiết món
+  orderItems  OrderItem[]
+}
+
+model Order {
+  id          Int         @id @default(autoincrement())
+  tableId     Int
+  table       CoffeeTable @relation(fields: [tableId], references: [id])
+  status      String      @default("Chưa thanh toán") // Chưa thanh toán, Đã thanh toán
+  createdAt   DateTime    @default(now())
+  totalPrice  Float       @default(0)
+  items       OrderItem[]
+}
+
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  orderId   Int
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int     @default(1)
+  price     Float   // Giá tại thời điểm gọi món (phòng khi sau này đổi giá)
+}
