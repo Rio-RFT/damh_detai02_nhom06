@@ -1,18 +1,17 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Search, ChevronLeft, Minus, Plus, X } from 'lucide-react';
-
-const MOCK_MENU = [
-  { id: 1, name: 'Cà phê Đen Đá', price: 25000, category: 'Cà phê', imageUrl: 'https://images.unsplash.com/photo-1514432324607-a2ce7beea8dd?q=80&w=400&auto=format&fit=crop' },
-  { id: 2, name: 'Bạc Xỉu Sữa Tươi', price: 30000, category: 'Cà phê', imageUrl: 'https://images.unsplash.com/photo-1537047902294-62a40c20a6ae?q=80&w=400&auto=format&fit=crop' },
-  { id: 3, name: 'Trà Đào Cam Sả', price: 45000, category: 'Trà', imageUrl: 'https://images.unsplash.com/photo-1556679343-c7306c1976bc?q=80&w=400&auto=format&fit=crop' },
-  { id: 4, name: 'Trà Matcha Latte', price: 55000, category: 'Trà', imageUrl: 'https://images.unsplash.com/photo-1515823662972-da6a2e4d3002?q=80&w=400&auto=format&fit=crop' },
-  { id: 5, name: 'Bánh Sừng Bò', price: 35000, category: 'Đồ ăn', imageUrl: 'https://images.unsplash.com/photo-1555507036-ab1f4038808a?q=80&w=400&auto=format&fit=crop' },
-];
+import {
+  INITIAL_MENU_PRODUCTS,
+  loadMenuProducts,
+  MENU_UPDATED_EVENT,
+  toOrderMenuRows,
+  type OrderMenuRow,
+} from '@/lib/menu-data';
 
 interface OrderItem {
   id: number;
@@ -31,12 +30,24 @@ export default function OrderPage() {
   const [search, setSearch] = useState('');
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [isPaid, setIsPaid] = useState(false);
+  const [menuForOrder, setMenuForOrder] = useState<OrderMenuRow[]>(() =>
+    toOrderMenuRows(INITIAL_MENU_PRODUCTS)
+  );
 
-  const filteredMenu = MOCK_MENU.filter(item => 
+  useEffect(() => {
+    function syncMenu() {
+      setMenuForOrder(toOrderMenuRows(loadMenuProducts()));
+    }
+    syncMenu();
+    window.addEventListener(MENU_UPDATED_EVENT, syncMenu);
+    return () => window.removeEventListener(MENU_UPDATED_EVENT, syncMenu);
+  }, []);
+
+  const filteredMenu = menuForOrder.filter(item => 
     item.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  const addToOrder = (menuItem: typeof MOCK_MENU[0]) => {
+  const addToOrder = (menuItem: OrderMenuRow) => {
     if (isPaid) return;
     const existing = orderItems.find(item => item.menuId === menuItem.id);
     if (existing) {
