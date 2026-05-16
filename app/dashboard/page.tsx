@@ -118,7 +118,7 @@ export default function FloorPlanPage() {
               
               // Also update managedTable if it's currently open
               setManagedTable(prev => {
-                if (prev?.id === data.tableId) {
+                if (prev && prev.id === data.tableId) {
                   return {
                     ...prev,
                     status: 'Đã đặt',

@@ -1,4 +1,4 @@
-export type FloorTableStatus = "Trống" | "Đang có khách" | "Đã đặt";
+export type FloorTableStatus = "Trống" | "Đang có khách" | "Đã đặt" | "Đang phục vụ" | "Đang dùng";
 export type FloorOrientation = "horizontal" | "vertical";
 export type FloorObjectType = "table" | "bar";
 
