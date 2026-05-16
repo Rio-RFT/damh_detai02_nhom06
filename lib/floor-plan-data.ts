@@ -2,13 +2,6 @@ export type FloorTableStatus = "Trống" | "Đang có khách" | "Đã đặt";
 export type FloorOrientation = "horizontal" | "vertical";
 export type FloorObjectType = "table" | "bar";
 
-/** Thông tin khách đặt bàn (lưu cùng bàn trên sơ đồ) */
-export interface FloorReservation {
-  customerName: string;
-  phone: string;
-  datetime: string;
-}
-
 export interface FloorObject {
   id: number;
   name: string;
@@ -18,13 +11,33 @@ export interface FloorObject {
   area: string;
   posX: number;
   posY: number;
+  width?: number; // % or px
+  height?: number; // % or px
   orientation: FloorOrientation;
-  reservation?: FloorReservation;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  bookingTime?: string | null;
 }
 
 export const FLOOR_PLAN_STORAGE_KEY = "cafe-floor-plan-tables";
+export const FLOOR_CONFIG_STORAGE_KEY = "cafe-floor-plan-config";
+export const FLOOR_AREAS_STORAGE_KEY = "cafe-floor-plan-areas";
 export const FLOOR_UPDATED_EVENT = "cafe-floor-updated";
-export const TABLE_AREAS = ["Bên trong", "Sân vườn", "Lầu 1"] as const;
+export const DEFAULT_TABLE_AREAS = ["Bên trong", "Sân vườn", "Lầu 1"];
+
+export interface FloorConfig {
+  containerWidth: number; // px
+  containerHeight: number; // px
+  snapToGrid: boolean;
+  gridSize: number;
+}
+
+export const DEFAULT_FLOOR_CONFIG: FloorConfig = {
+  containerWidth: 800,
+  containerHeight: 600,
+  snapToGrid: false,
+  gridSize: 20,
+};
 
 export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
   {
@@ -36,6 +49,8 @@ export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
     area: "Bên trong",
     posX: 50,
     posY: 20,
+    width: 250,
+    height: 80,
     orientation: "horizontal",
   },
   {
@@ -47,6 +62,8 @@ export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
     area: "Bên trong",
     posX: 20,
     posY: 30,
+    width: 60,
+    height: 60,
     orientation: "horizontal",
   },
   {
@@ -58,6 +75,8 @@ export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
     area: "Bên trong",
     posX: 50,
     posY: 45,
+    width: 100,
+    height: 60,
     orientation: "horizontal",
   },
   {
@@ -69,12 +88,12 @@ export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
     area: "Bên trong",
     posX: 80,
     posY: 30,
+    width: 60,
+    height: 100,
     orientation: "vertical",
-    reservation: {
-      customerName: "Lê Minh",
-      phone: "0901234567",
-      datetime: "2026-06-01T18:00",
-    },
+    customerName: "Lê Minh",
+    customerPhone: "0901234567",
+    bookingTime: "18:00",
   },
   {
     id: 4,
@@ -85,6 +104,8 @@ export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
     area: "Bên trong",
     posX: 35,
     posY: 70,
+    width: 100,
+    height: 60,
     orientation: "horizontal",
   },
   {
@@ -96,19 +117,11 @@ export const INITIAL_FLOOR_OBJECTS: FloorObject[] = [
     area: "Sân vườn",
     posX: 30,
     posY: 40,
+    width: 60,
+    height: 60,
     orientation: "horizontal",
   },
 ];
-
-function isReservation(r: unknown): r is FloorReservation {
-  return (
-    r !== null &&
-    typeof r === "object" &&
-    typeof (r as FloorReservation).customerName === "string" &&
-    typeof (r as FloorReservation).phone === "string" &&
-    typeof (r as FloorReservation).datetime === "string"
-  );
-}
 
 function isValidFloorList(data: unknown): data is FloorObject[] {
   if (!Array.isArray(data)) return false;
@@ -132,12 +145,27 @@ function isValidFloorList(data: unknown): data is FloorObject[] {
     ) {
       return false;
     }
-    const fo = t as FloorObject;
-    if (fo.reservation !== undefined && fo.reservation !== null) {
-      return isReservation(fo.reservation);
-    }
     return true;
   });
+}
+
+export function loadFloorAreas(): string[] {
+  if (typeof window === "undefined") return DEFAULT_TABLE_AREAS;
+  try {
+    const raw = localStorage.getItem(FLOOR_AREAS_STORAGE_KEY);
+    if (!raw) return DEFAULT_TABLE_AREAS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    return DEFAULT_TABLE_AREAS;
+  } catch {
+    return DEFAULT_TABLE_AREAS;
+  }
+}
+
+export function persistFloorAreas(areas: string[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(FLOOR_AREAS_STORAGE_KEY, JSON.stringify(areas));
+  window.dispatchEvent(new Event(FLOOR_UPDATED_EVENT));
 }
 
 export function loadFloorObjects(): FloorObject[] {
@@ -156,6 +184,23 @@ export function loadFloorObjects(): FloorObject[] {
 export function persistFloorObjects(items: FloorObject[]) {
   if (typeof window === "undefined") return;
   localStorage.setItem(FLOOR_PLAN_STORAGE_KEY, JSON.stringify(items));
+  window.dispatchEvent(new Event(FLOOR_UPDATED_EVENT));
+}
+
+export function loadFloorConfig(): FloorConfig {
+  if (typeof window === "undefined") return DEFAULT_FLOOR_CONFIG;
+  try {
+    const raw = localStorage.getItem(FLOOR_CONFIG_STORAGE_KEY);
+    if (!raw) return DEFAULT_FLOOR_CONFIG;
+    return JSON.parse(raw) as FloorConfig;
+  } catch {
+    return DEFAULT_FLOOR_CONFIG;
+  }
+}
+
+export function persistFloorConfig(config: FloorConfig) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(FLOOR_CONFIG_STORAGE_KEY, JSON.stringify(config));
   window.dispatchEvent(new Event(FLOOR_UPDATED_EVENT));
 }
 

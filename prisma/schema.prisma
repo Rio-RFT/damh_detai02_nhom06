@@ -24,7 +24,12 @@ model CoffeeTable {
   area        String   @default("Bên trong") // Bên trong, Bên ngoài, Lầu 1...
   posX        Int      @default(0) // Tọa độ X để xếp vị trí (0-100% hoặc theo grid)
   posY        Int      @default(0) // Tọa độ Y để xếp vị trí (0-100% hoặc theo grid)
+  width       Int?     // Kích thước chiều rộng
+  height      Int?     // Kích thước chiều cao
   orientation String   @default("horizontal") // horizontal hoặc vertical
+  customerName String? // Tên khách đặt
+  customerPhone String? // SĐT khách đặt
+  bookingTime  String? // Giờ hẹn
   orders      Order[]
 }
 
@@ -64,4 +69,15 @@ model OrderItem {
   product   Product @relation(fields: [productId], references: [id])
   quantity  Int     @default(1)
   price     Float   // Giá tại thời điểm gọi món (phòng khi sau này đổi giá)
+}
+
+model Notification {
+  id          Int      @id @default(autoincrement())
+  message     String   @db.Text
+  type        String   @default("info") // info, success, warning
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  tableName   String?
+  customerName String?
+  bookingTime  String?
 }

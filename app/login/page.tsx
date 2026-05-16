@@ -13,15 +13,25 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const router = useRouter();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    // Mock Authentication
-    if (username && password) {
-      router.push('/dashboard');
-    } else {
-      setError('Vui lòng nhập thông tin hợp lệ.');
+    try {
+      const res = await fetch('/api/auth/staff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (res.ok) {
+        router.push('/dashboard');
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Đăng nhập thất bại.');
+      }
+    } catch (error) {
+      setError('Có lỗi xảy ra.');
     }
   };
 

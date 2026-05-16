@@ -12,216 +12,387 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { X, Save, Edit3, RotateCw, Trash2, Plus, Coffee } from 'lucide-react';
+import { X, Save, Edit3, RotateCw, Trash2, Plus, Coffee, Copy, Settings, RefreshCw, Bell, CheckCircle2, Phone, User, ShoppingCart, LogOut as LogOutIcon, ArrowRight, Clock } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
-  INITIAL_FLOOR_OBJECTS,
-  loadFloorObjects,
-  persistFloorObjects,
-  TABLE_AREAS,
+  DEFAULT_FLOOR_CONFIG,
+  loadFloorConfig,
+  persistFloorConfig,
+  loadFloorAreas,
+  persistFloorAreas,
+  type FloorConfig,
   type FloorObject,
   type FloorObjectType,
   type FloorOrientation,
   type FloorTableStatus,
 } from '@/lib/floor-plan-data';
-
-const areas = [...TABLE_AREAS];
+import { getTables, saveTables, deleteTable } from '@/lib/floor-plan-actions';
+import { confirmCustomerArrival, checkoutTable, cancelBooking } from '@/lib/table-actions';
 
 export default function FloorPlanPage() {
-  const [tables, setTables] = useState<FloorObject[]>(INITIAL_FLOOR_OBJECTS);
-  const [currentArea, setCurrentArea] = useState<string>(areas[0]);
+  const [tables, setTables] = useState<FloorObject[]>([]);
+  const [config, setConfig] = useState<FloorConfig>(DEFAULT_FLOOR_CONFIG);
+  const [areas, setAreas] = useState<string[]>([]);
+  const [currentArea, setCurrentArea] = useState<string>("");
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isEditDetailsOpen, setIsEditDetailsOpen] = useState(false);
+  const [editForm, setEditForm] = useState<FloorObject | null>(null);
   const [selectedTable, setSelectedTable] = useState<FloorObject | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addForm, setAddForm] = useState<Partial<FloorObject>>({});
+  const [addFormError, setAddFormError] = useState<string | null>(null);
+  const [user, setUser] = useState<any>(null);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [holdingTables, setHoldingTables] = useState<Record<number, string>>({});
+  
   const [isReserveModalOpen, setIsReserveModalOpen] = useState(false);
+  const [isTableManageModalOpen, setIsTableManageModalOpen] = useState(false);
+  const [managedTable, setManagedTable] = useState<FloorObject | null>(null);
   const [reserveForm, setReserveForm] = useState({
     customerName: "",
     phone: "",
     datetime: "",
   });
-  const [addOpen, setAddOpen] = useState(false);
-  const [addForm, setAddForm] = useState<{
-    type: FloorObjectType;
-    name: string;
-    capacity: 2 | 4 | 6;
-    area: string;
-  }>({ type: 'table', name: '', capacity: 4, area: areas[0] });
-  const [addFormError, setAddFormError] = useState<string | null>(null);
-  
+
   const [draggingTableId, setDraggingTableId] = useState<number | null>(null);
+  const [resizingTableId, setResizingTableId] = useState<number | null>(null);
+  const [resizeStart, setResizeStart] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+  
+  const [contextMenu, setContextMenu] = useState<{ visible: boolean, x: number, y: number, table: FloorObject | null }>({
+    visible: false, x: 0, y: 0, table: null
+  });
+
   const containerRef = useRef<HTMLDivElement>(null);
-  const tablesRef = useRef<FloorObject[]>(INITIAL_FLOOR_OBJECTS);
+  const tablesRef = useRef<FloorObject[]>([]);
+  const configRef = useRef<FloorConfig>(DEFAULT_FLOOR_CONFIG);
   const router = useRouter();
 
   useEffect(() => {
-    setTables(loadFloorObjects());
+    let eventSource: EventSource | null = null;
+
+    async function init() {
+      const dbTables = await getTables();
+      setTables(dbTables);
+      tablesRef.current = dbTables;
+      
+      const savedConfig = loadFloorConfig();
+      setConfig(savedConfig);
+      configRef.current = savedConfig;
+      
+      const savedAreas = loadFloorAreas();
+      setAreas(savedAreas);
+      if (savedAreas.length > 0) setCurrentArea(savedAreas[0]);
+
+      // Load user role
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+        }
+      } catch (error) {
+        console.error("Failed to load user info:", error);
+      }
+
+      // Setup SSE for Real-time Notifications
+      eventSource = new EventSource('/api/notifications');
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.tableId) {
+            // Handle different event types if we want, but for now we look at the data structure
+            if (data.message) { // NEW_BOOKING
+              setTables(prev => prev.map(t => t.id === data.tableId ? { 
+                ...t, 
+                status: 'Đã đặt',
+                customerName: data.customerName,
+                customerPhone: data.customerPhone,
+                bookingTime: data.bookingTime
+              } : t));
+              
+              // Also update managedTable if it's currently open
+              setManagedTable(prev => {
+                if (prev?.id === data.tableId) {
+                  return {
+                    ...prev,
+                    status: 'Đã đặt',
+                    customerName: data.customerName,
+                    customerPhone: data.customerPhone,
+                    bookingTime: data.bookingTime
+                  };
+                }
+                return prev;
+              });
+
+              setNotifications(prev => {
+                const isDuplicate = prev.some(n => n.timestamp === data.timestamp && n.tableId === data.tableId);
+                if (isDuplicate) return prev;
+                return [data, ...prev].slice(0, 3);
+              });
+              setHoldingTables(prev => {
+                const next = { ...prev };
+                delete next[data.tableId];
+                return next;
+              });
+            } else if (data.customerName) { // TABLE_HOLD
+              setHoldingTables(prev => ({ ...prev, [data.tableId]: data.customerName }));
+            } else { // TABLE_RELEASE
+              setHoldingTables(prev => {
+                const next = { ...prev };
+                delete next[data.tableId];
+                return next;
+              });
+            }
+          }
+        } catch (e) {}
+      };
+    }
+
+    init();
+
+    return () => {
+      if (eventSource) eventSource.close();
+    };
   }, []);
 
+  const isManager = user?.role === 'Quản lý';
   useEffect(() => {
     tablesRef.current = tables;
   }, [tables]);
 
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  const checkOverlap = (id: number, x: number, y: number, w: number, h: number, area: string) => {
+    const containerW = configRef.current.containerWidth;
+    const containerH = configRef.current.containerHeight;
+    const px1 = (x * containerW) / 100;
+    const py1 = (y * containerH) / 100;
+    
+    for (const t of tablesRef.current) {
+      if (t.id === id || t.area !== area) continue;
+      const isVert = t.orientation === 'vertical';
+      let tw = t.width || (t.type === 'bar' ? (isVert ? 80 : 250) : (isVert ? 60 : (t.capacity > 2 ? 100 : 60)));
+      let th = t.height || (t.type === 'bar' ? (isVert ? 250 : 80) : (isVert ? (t.capacity > 2 ? 100 : 60) : 60));
+      const px2 = (t.posX * containerW) / 100;
+      const py2 = (t.posY * containerH) / 100;
+      if (Math.abs(px1 - px2) < (w + tw) / 2 && Math.abs(py1 - py2) < (h + th) / 2) return true;
+    }
+    return false;
+  };
+
   const handlePointerDown = (e: React.PointerEvent, id: number) => {
-    if (!isEditMode) return;
+    if (!isEditMode || !isManager) return;
     e.stopPropagation();
     setDraggingTableId(id);
     setSelectedTable(tablesRef.current.find(t => t.id === id) || null);
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handleResizeDown = (e: React.PointerEvent, table: FloorObject) => {
+    if (!isEditMode || !isManager) return;
+    e.stopPropagation();
+    const isVert = table.orientation === 'vertical';
+    const w = table.width || (table.type === 'bar' ? (isVert ? 80 : 250) : (isVert ? 60 : (table.capacity > 2 ? 100 : 60)));
+    const h = table.height || (table.type === 'bar' ? (isVert ? 250 : 80) : (isVert ? (table.capacity > 2 ? 100 : 60) : 60));
+    setResizingTableId(table.id);
+    setResizeStart({ x: e.clientX, y: e.clientY, w, h });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isEditMode || draggingTableId === null || !containerRef.current) return;
-    
-    const rect = containerRef.current.getBoundingClientRect();
-    const draggedTable = tablesRef.current.find(t => t.id === draggingTableId);
-    if (!draggedTable) return;
-
-    // Calculate dimensions of the object to establish boundaries
-    const isVert = draggedTable.orientation === 'vertical';
-    let w = 0;
-    let h = 0;
-    if (draggedTable.type === 'bar') {
-      w = isVert ? 80 : 250;
-      h = isVert ? 250 : 80;
-    } else {
-      w = isVert ? 60 : (draggedTable.capacity > 2 ? 100 : 60);
-      h = isVert ? (draggedTable.capacity > 2 ? 100 : 60) : 60;
+    if (!isEditMode || !containerRef.current || !isManager) return;
+    if (resizingTableId !== null && resizeStart) {
+      const dx = e.clientX - resizeStart.x;
+      const dy = e.clientY - resizeStart.y;
+      let newW = Math.max(40, resizeStart.w + dx * 2);
+      let newH = Math.max(40, resizeStart.h + dy * 2);
+      if (configRef.current.snapToGrid) {
+        newW = Math.round(newW / configRef.current.gridSize) * configRef.current.gridSize;
+        newH = Math.round(newH / configRef.current.gridSize) * configRef.current.gridSize;
+      }
+      const t = tablesRef.current.find(o => o.id === resizingTableId);
+      if (t && !checkOverlap(t.id, t.posX, t.posY, newW, newH, t.area)) {
+        setTables(prev => prev.map(o => o.id === resizingTableId ? { ...o, width: newW, height: newH } : o));
+      }
+      return;
     }
-    
-    // Add extra padding for chairs
-    const padding = 20;
-
-    let px = e.clientX - rect.left;
-    let py = e.clientY - rect.top;
-    
-    // Clamp coordinates so the object never leaves the container
-    px = Math.max(w / 2 + padding, Math.min(rect.width - w / 2 - padding, px));
-    py = Math.max(h / 2 + padding, Math.min(rect.height - h / 2 - padding, py));
-
-    const x = (px / rect.width) * 100;
-    const y = (py / rect.height) * 100;
-
-    setTables(prev => prev.map(t => t.id === draggingTableId ? { ...t, posX: x, posY: y } : t));
+    if (draggingTableId !== null) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const draggedTable = tablesRef.current.find(t => t.id === draggingTableId);
+      if (!draggedTable) return;
+      const isVert = draggedTable.orientation === 'vertical';
+      const w = draggedTable.width || (draggedTable.type === 'bar' ? (isVert ? 80 : 250) : (isVert ? 60 : (draggedTable.capacity > 2 ? 100 : 60)));
+      const h = draggedTable.height || (draggedTable.type === 'bar' ? (isVert ? 250 : 80) : (isVert ? (draggedTable.capacity > 2 ? 100 : 60) : 60));
+      let px = e.clientX - rect.left;
+      let py = e.clientY - rect.top;
+      if (configRef.current.snapToGrid) {
+        px = Math.round(px / configRef.current.gridSize) * configRef.current.gridSize;
+        py = Math.round(py / configRef.current.gridSize) * configRef.current.gridSize;
+      }
+      px = Math.max(w / 2 + 20, Math.min(rect.width - w / 2 - 20, px));
+      py = Math.max(h / 2 + 20, Math.min(rect.height - h / 2 - 20, py));
+      const x = (px / rect.width) * 100;
+      const y = (py / rect.height) * 100;
+      if (!checkOverlap(draggedTable.id, x, y, w, h, draggedTable.area)) {
+        setTables(prev => prev.map(t => t.id === draggingTableId ? { ...t, posX: x, posY: y } : t));
+      }
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (draggingTableId !== null) {
-      try {
-        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {
-        /* capture có thể đã được nhả */
-      }
+    if (draggingTableId !== null || resizingTableId !== null) {
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
       setDraggingTableId(null);
-      queueMicrotask(() => persistFloorObjects(tablesRef.current));
+      setResizingTableId(null);
+      setResizeStart(null);
     }
   };
 
+  const duplicateTable = (obj: FloorObject) => {
+    if (!isManager) return;
+    const nextId = tables.length === 0 ? 1 : Math.max(...tables.map(t => t.id)) + 1;
+    let newName = obj.name;
+    const match = obj.name.match(/^(.*?)(\d+)$/);
+    if (match) {
+      const prefix = match[1];
+      const numStrLength = match[2].length;
+      const existingNumbers = tablesRef.current
+        .map(t => {
+          const m = t.name.match(new RegExp(`^${prefix}(\\d+)$`));
+          return m ? parseInt(m[1]) : null;
+        }).filter((n): n is number => n !== null);
+      const nextNum = (existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0) + 1;
+      newName = `${prefix}${nextNum.toString().padStart(numStrLength, '0')}`;
+    } else {
+      newName = `${obj.name} (Copy)`;
+    }
+    const newObj: FloorObject = { ...obj, id: nextId, name: newName, posX: obj.posX + 2, posY: obj.posY + 2, status: 'Trống', reservation: undefined };
+    setTables(prev => [...prev, newObj]);
+    setSelectedTable(newObj);
+  };
+
+  const handleEditSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editForm || !isManager) return;
+    setTables(prev => prev.map(t => t.id === editForm.id ? editForm : t));
+    setIsEditDetailsOpen(false);
+    setSelectedTable(editForm);
+  };
+
   const toggleOrientation = () => {
-    if (!selectedTable) return;
-    setTables(prev => {
-      const next: FloorObject[] = prev.map(t =>
-        t.id === selectedTable.id
-          ? {
-              ...t,
-              orientation: (t.orientation === 'horizontal' ? 'vertical' : 'horizontal') as FloorOrientation,
-            }
-          : t
-      );
-      persistFloorObjects(next);
-      return next;
-    });
-    setSelectedTable({
-      ...selectedTable,
-      orientation: (selectedTable.orientation === 'horizontal' ? 'vertical' : 'horizontal') as FloorOrientation,
-    });
+    if (!selectedTable || !isManager) return;
+    const newOrientation = selectedTable.orientation === 'horizontal' ? 'vertical' : 'horizontal';
+    setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, orientation: newOrientation as any } : t));
+    setSelectedTable({ ...selectedTable, orientation: newOrientation as any });
   };
 
   const handleDeleteObject = (obj: FloorObject, e?: React.MouseEvent) => {
+    if (!isManager) return;
     e?.stopPropagation();
     if (!window.confirm(`Xóa "${obj.name}" khỏi sơ đồ? Thao tác không thể hoàn tác.`)) return;
-    setTables(prev => {
-      const next = prev.filter(t => t.id !== obj.id);
-      persistFloorObjects(next);
-      return next;
-    });
+    setTables(prev => prev.filter(t => t.id !== obj.id));
+    deleteTable(obj.name);
     setSelectedTable(s => (s?.id === obj.id ? null : s));
   };
 
   const openAddDialog = () => {
+    if (!isManager) return;
     setAddFormError(null);
-    setAddForm({
-      type: 'table',
-      name: '',
-      capacity: 4,
-      area: currentArea,
-    });
+    setAddForm({ type: 'table', name: '', capacity: 4, area: currentArea || (areas.length > 0 ? areas[0] : "") });
     setAddOpen(true);
   };
 
+  const handleAreaAdd = () => {
+    if (!isManager) return;
+    const name = prompt("Nhập tên khu vực mới:");
+    if (!name || areas.includes(name)) return;
+    const next = [...areas, name];
+    setAreas(next);
+    persistFloorAreas(next);
+    if (!currentArea) setCurrentArea(name);
+  };
+
+  const handleAreaDelete = (area: string) => {
+    if (!isManager || areas.length <= 1) return;
+    if (!confirm(`Xóa khu vực "${area}"? Tất cả bàn trong khu vực này sẽ bị xóa.`)) return;
+    const next = areas.filter(a => a !== area);
+    setAreas(next);
+    persistFloorAreas(next);
+    setTables(prev => prev.filter(t => t.area !== area));
+    if (currentArea === area) setCurrentArea(next[0]);
+  };
+
+  const handleAreaRename = (oldName: string) => {
+    if (!isManager) return;
+    const newName = prompt(`Đổi tên khu vực "${oldName}" thành:`, oldName);
+    if (!newName || newName === oldName || areas.includes(newName)) return;
+    const nextAreas = areas.map(a => a === oldName ? newName : a);
+    setAreas(nextAreas);
+    persistFloorAreas(nextAreas);
+    setTables(prev => prev.map(t => t.area === oldName ? { ...t, area: newName } : t));
+    if (currentArea === oldName) setCurrentArea(newName);
+  };
+
+  const resetSize = (id: number) => {
+    if (!isManager) return;
+    setTables(prev => prev.map(t => t.id === id ? { ...t, width: undefined, height: undefined } : t));
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, table: FloorObject) => {
+    if (!isEditMode || !isManager) return;
+    e.preventDefault();
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, table });
+    setSelectedTable(table);
+  };
+
+  const closeContextMenu = () => setContextMenu(prev => ({ ...prev, visible: false }));
+
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setAddFormError(null);
-    const name = addForm.name.trim();
-    if (!name) {
-      setAddFormError('Vui lòng nhập tên hiển thị (ví dụ: Bàn 06, Quầy phụ).');
-      return;
-    }
+    if (!isManager) return;
+    const name = addForm.name?.trim();
+    if (!name) { setAddFormError('Vui lòng nhập tên.'); return; }
     const nextId = tables.length === 0 ? 1 : Math.max(...tables.map(t => t.id)) + 1;
-    const newObj: FloorObject = {
-      id: nextId,
-      name,
-      type: addForm.type,
-      status: 'Trống',
-      capacity: addForm.type === 'bar' ? 0 : addForm.capacity,
-      area: addForm.area,
-      posX: 50,
-      posY: 50,
-      orientation: 'horizontal',
-    };
-    setTables(prev => {
-      const next = [...prev, newObj];
-      persistFloorObjects(next);
-      return next;
-    });
+    const newObj: FloorObject = { id: nextId, name, type: addForm.type as any, status: 'Trống', capacity: addForm.type === 'bar' ? 0 : addForm.capacity!, area: addForm.area!, posX: 50, posY: 50, orientation: 'horizontal' };
+    setTables(prev => [...prev, newObj]);
     setAddOpen(false);
     setIsEditMode(true);
     setSelectedTable(newObj);
-    setCurrentArea(addForm.area);
   };
 
-  const closeModals = () => {
-    if (!isEditMode) setSelectedTable(null);
-    setIsReserveModalOpen(false);
-  };
-
-  const getStatusColor = (status: FloorTableStatus) => {
+  const getStatusColor = (status: string) => {
     switch(status) {
-      case 'Trống': return 'bg-zinc-200 border-zinc-300';
-      case 'Đang có khách': return 'bg-zinc-800 border-zinc-900 text-white';
-      case 'Đã đặt': return 'bg-zinc-400 border-zinc-500 text-white';
-      default: return 'bg-zinc-200 border-zinc-300';
+      case 'Trống': return 'bg-white border-zinc-200 text-zinc-400';
+      case 'Đang dùng': return 'bg-emerald-500 border-emerald-600 text-white shadow-emerald-100 shadow-lg';
+      case 'Đang phục vụ': return 'bg-emerald-500 border-emerald-600 text-white shadow-emerald-100 shadow-lg';
+      case 'Đã đặt': return 'bg-amber-400 border-amber-500 text-white shadow-amber-100 shadow-lg';
+      default: return 'bg-white border-zinc-200 text-zinc-400';
     }
   };
+
+  const closeModals = () => { if (!isEditMode) setSelectedTable(null); setIsReserveModalOpen(false); };
 
   const renderObject = (table: FloorObject) => {
     const isVert = table.orientation === 'vertical';
     const isSelected = selectedTable?.id === table.id;
     const isDragging = draggingTableId === table.id;
-    
-    // Dynamic Edit Badge position (so it never clips out of the container)
-    // If the object is too close to the top edge (Y < 15%), display the badge below it
-    const badgePositionClass = table.posY < 15 ? "bottom-[-40px]" : "top-[-40px]";
+    const isHolding = holdingTables[table.id];
     
     if (table.type === 'bar') {
-      const w = isVert ? 80 : 250;
-      const h = isVert ? 250 : 80;
+      const w = table.width || (isVert ? 80 : 250);
+      const h = table.height || (isVert ? 250 : 80);
       const clampX = w / 2 + 10;
       const clampY = h / 2 + 10;
       
       return (
         <div 
           key={table.id}
-          className="absolute"
+          className={cn("absolute", isHolding && "animate-pulse")}
           style={{
             left: `clamp(${clampX}px, ${table.posX}%, calc(100% - ${clampX}px))`,
             top: `clamp(${clampY}px, ${table.posY}%, calc(100% - ${clampY}px))`,
@@ -233,7 +404,17 @@ export default function FloorPlanPage() {
             transition: isDragging ? 'none' : 'transform 0.2s',
           }}
           onPointerDown={(e) => handlePointerDown(e, table.id)}
-          onClick={(e) => { e.stopPropagation(); if (isEditMode) setSelectedTable(table); }}
+          onContextMenu={(e) => handleContextMenu(e, table)}
+          onClick={(e) => { 
+            e.stopPropagation(); 
+            if (isEditMode) { 
+              setSelectedTable(table); 
+              closeContextMenu(); 
+            } else {
+              setManagedTable(table);
+              setIsTableManageModalOpen(true);
+            }
+          }}
         >
           <div className={cn(
             "absolute inset-0 bg-zinc-800 text-white flex flex-col justify-center items-center rounded-xl shadow-lg border-b-4 border-zinc-950 transition-all",
@@ -248,23 +429,20 @@ export default function FloorPlanPage() {
             </span>
           </div>
           
-          {isEditMode && isSelected && (
-            <div className={cn("absolute left-1/2 -translate-x-1/2 bg-zinc-900 text-white text-[10px] px-2 py-1 rounded shadow whitespace-nowrap z-30 flex items-center gap-2", badgePositionClass)}>
-              <button type="button" onClick={(e) => { e.stopPropagation(); toggleOrientation(); }} className="hover:text-zinc-300" title="Xoay">
-                <RotateCw className="w-3 h-3" />
-              </button>
-              <div className="w-px h-3 bg-zinc-700" />
-              <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteObject(table, e); }} className="hover:text-red-400" title="Xóa quầy">
-                <Trash2 className="w-3 h-3" />
-              </button>
+          {isEditMode && isSelected && isManager && (
+            <div 
+              className="absolute bottom-[-6px] right-[-6px] w-4 h-4 bg-primary rounded-full cursor-se-resize shadow-md flex items-center justify-center z-40 border-2 border-white"
+              onPointerDown={(e) => handleResizeDown(e, table)}
+            >
+              <div className="w-1.5 h-1.5 bg-white rounded-full opacity-50" />
             </div>
           )}
         </div>
       );
     }
     
-    const w = isVert ? 60 : (table.capacity > 2 ? 100 : 60);
-    const h = isVert ? (table.capacity > 2 ? 100 : 60) : 60;
+    const w = table.width || (isVert ? 60 : (table.capacity > 2 ? 100 : 60));
+    const h = table.height || (isVert ? (table.capacity > 2 ? 100 : 60) : 60);
     const chairs = [];
     const chairSize = 16;
     const offset = -6;
@@ -289,22 +467,6 @@ export default function FloorPlanPage() {
         chairs.push({ bottom: -chairSize - offset, left: '25%', transform: 'translateX(-50%)' });
         chairs.push({ bottom: -chairSize - offset, left: '75%', transform: 'translateX(-50%)' });
       }
-    } else if (table.capacity === 6) {
-      if (isVert) {
-        chairs.push({ top: -chairSize - offset, left: '50%', transform: 'translateX(-50%)' });
-        chairs.push({ bottom: -chairSize - offset, left: '50%', transform: 'translateX(-50%)' });
-        chairs.push({ left: -chairSize - offset, top: '25%', transform: 'translateY(-50%)' });
-        chairs.push({ left: -chairSize - offset, top: '75%', transform: 'translateY(-50%)' });
-        chairs.push({ right: -chairSize - offset, top: '25%', transform: 'translateY(-50%)' });
-        chairs.push({ right: -chairSize - offset, top: '75%', transform: 'translateY(-50%)' });
-      } else {
-        chairs.push({ left: -chairSize - offset, top: '50%', transform: 'translateY(-50%)' });
-        chairs.push({ right: -chairSize - offset, top: '50%', transform: 'translateY(-50%)' });
-        chairs.push({ top: -chairSize - offset, left: '25%', transform: 'translateX(-50%)' });
-        chairs.push({ top: -chairSize - offset, left: '75%', transform: 'translateX(-50%)' });
-        chairs.push({ bottom: -chairSize - offset, left: '25%', transform: 'translateX(-50%)' });
-        chairs.push({ bottom: -chairSize - offset, left: '75%', transform: 'translateX(-50%)' });
-      }
     }
 
     const clampX = w / 2 + 20;
@@ -313,7 +475,10 @@ export default function FloorPlanPage() {
     return (
       <div 
         key={table.id}
-        className="absolute"
+        className={cn(
+          "absolute",
+          !isEditMode && "cursor-pointer"
+        )}
         style={{
           left: `clamp(${clampX}px, ${table.posX}%, calc(100% - ${clampX}px))`,
           top: `clamp(${clampY}px, ${table.posY}%, calc(100% - ${clampY}px))`,
@@ -325,34 +490,58 @@ export default function FloorPlanPage() {
           transition: isDragging ? 'none' : 'transform 0.2s',
         }}
         onPointerDown={(e) => handlePointerDown(e, table.id)}
-        onClick={(e) => { e.stopPropagation(); if (!isEditMode) setSelectedTable(table); else setSelectedTable(table); }}
+        onContextMenu={(e) => handleContextMenu(e, table)}
+        onClick={(e) => { 
+          e.stopPropagation(); 
+          if (isEditMode) { 
+            setSelectedTable(table); 
+            closeContextMenu(); 
+          } else {
+            setManagedTable(table);
+            setIsTableManageModalOpen(true);
+          }
+        }}
       >
         <div className={cn(
-          "absolute inset-0 rounded-lg border-2 flex items-center justify-center transition-colors shadow-sm",
-          getStatusColor(table.status),
-          isSelected && isEditMode && "ring-4 ring-primary border-primary",
-          isSelected && !isEditMode && "ring-2 ring-zinc-900 border-zinc-900"
+          "absolute inset-0 border-2 border-zinc-200 transition-all shadow-sm overflow-hidden",
+          table.status === 'Trống' ? (isHolding ? "bg-amber-50 border-amber-200" : "bg-white") : getStatusColor(table.status),
+          isSelected && isEditMode ? "ring-4 ring-primary border-primary" : "rounded-xl",
+          isHolding && !isSelected && "ring-2 ring-amber-400 border-amber-400"
         )}>
-          <span className="text-xs font-bold whitespace-nowrap">{table.name.replace('Bàn ', '')}</span>
+          {chairs.map((chair, i) => (
+            <div 
+              key={i} 
+              className={cn(
+                "absolute border rounded-sm",
+                isHolding ? "bg-amber-200 border-amber-300" : 
+                table.status === 'Đang dùng' ? "bg-emerald-400 border-emerald-600" :
+                table.status === 'Đã đặt' ? "bg-amber-300 border-amber-500" :
+                "bg-zinc-300 border-zinc-400"
+              )}
+              style={{ width: chairSize, height: chairSize, ...chair }}
+            />
+          ))}
+          
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-2 text-center">
+            <span className={cn(
+              "text-[10px] font-bold uppercase tracking-wider mb-0.5",
+              isHolding ? "text-amber-600" : "text-zinc-400"
+            )}>{table.name}</span>
+            <span className={cn(
+              "text-[9px] font-medium",
+              isHolding ? "text-amber-500" : "text-zinc-500"
+            )}>
+              {isHolding ? `Đang chọn...` : `${table.capacity} ghế`}
+            </span>
+          </div>
         </div>
 
-        {chairs.map((style, i) => (
+        {isEditMode && isSelected && isManager && (
           <div 
-            key={i} 
-            className="absolute rounded-full border border-zinc-300 bg-zinc-100 shadow-sm"
-            style={{ width: chairSize, height: chairSize, ...style }}
-          />
-        ))}
-
-        {isEditMode && isSelected && (
-          <div className={cn("absolute left-1/2 -translate-x-1/2 bg-zinc-900 text-white text-[10px] px-2 py-1 rounded shadow whitespace-nowrap z-30 flex items-center gap-2", badgePositionClass)}>
-            <button type="button" onClick={(e) => { e.stopPropagation(); toggleOrientation(); }} className="hover:text-zinc-300" title="Xoay">
-              <RotateCw className="w-3 h-3" />
-            </button>
-            <div className="w-px h-3 bg-zinc-700" />
-            <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteObject(table, e); }} className="hover:text-red-400" title="Xóa bàn">
-              <Trash2 className="w-3 h-3" />
-            </button>
+            className="absolute bottom-[-6px] right-[-6px] w-4 h-4 bg-primary rounded-full cursor-se-resize shadow-md flex items-center justify-center z-40 border-2 border-white"
+            onPointerDown={(e) => handleResizeDown(e, table)}
+          >
+            <div className="w-1.5 h-1.5 bg-white rounded-full opacity-50" />
           </div>
         )}
       </div>
@@ -361,57 +550,148 @@ export default function FloorPlanPage() {
 
   return (
     <div className="space-y-6 h-full flex flex-col max-h-[calc(100vh-2rem)]">
+      {notifications.length > 0 && (
+        <div className="fixed top-6 right-6 z-[100] flex flex-col gap-3 w-80 animate-in fade-in slide-in-from-right-4">
+          {notifications.map((n, i) => (
+            <div key={i} className="bg-zinc-900 text-white p-5 rounded-2xl shadow-2xl flex flex-col gap-3 border border-white/10 overflow-hidden relative group">
+              {/* Progress bar for auto-close feel (visual only) */}
+              <div className="absolute bottom-0 left-0 h-1 bg-primary/40 w-full" />
+              
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+                    <Bell className="w-4 h-4" />
+                  </div>
+                  <span className="text-[10px] uppercase font-black tracking-widest text-zinc-500">Thông báo mới</span>
+                </div>
+                <button 
+                  onClick={() => setNotifications(prev => prev.filter((_, idx) => idx !== i))}
+                  className="text-zinc-500 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-white leading-tight">
+                  Khách đặt {n.tableName || "bàn"}
+                </h3>
+                <p className="text-[11px] text-zinc-400 font-medium">
+                  Họ tên: <span className="text-zinc-100">{n.customerName}</span>
+                </p>
+                <p className="text-[11px] text-zinc-400 font-medium">
+                  Thời gian: <span className="text-zinc-100">{n.bookingTime}</span>
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between pt-2 mt-1 border-t border-white/5">
+                <span className="text-[9px] text-zinc-500 font-medium italic">
+                  {new Date(n.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </span>
+                <button 
+                  onClick={() => {
+                    if (n.tableId) {
+                      // Logic to "go to" table could be here
+                    }
+                    setNotifications(prev => prev.filter((_, idx) => idx !== i));
+                  }}
+                  className="text-[9px] uppercase font-black tracking-widest text-primary hover:text-white transition-colors"
+                >
+                  Xem sơ đồ
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex justify-between items-end border-b border-border pb-4 shrink-0">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Sơ đồ mặt bằng</h2>
-          <p className="text-sm text-muted-foreground mt-1">Sắp xếp bàn và quản lý thực tế (Kéo thả để di chuyển)</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isEditMode ? "Sắp xếp bàn và quản lý thực tế (Kéo thả để di chuyển)" : "Theo dõi trạng thái bàn thời gian thực"}
+          </p>
         </div>
         <div className="flex gap-2">
-          <Button 
-            variant={isEditMode ? "default" : "outline"}
-            size="sm" 
-            className={cn("text-xs uppercase tracking-wider", isEditMode && "bg-zinc-900")}
-            onClick={() => {
-              if (isEditMode) {
-                persistFloorObjects(tablesRef.current);
-                setIsEditMode(false);
-                setSelectedTable(null);
-              } else {
-                setIsEditMode(true);
-              }
-            }}
-          >
-            {isEditMode ? <><Save className="w-3 h-3 mr-2"/> Lưu cấu hình</> : <><Edit3 className="w-3 h-3 mr-2"/> Cấu hình sơ đồ</>}
-          </Button>
-          {isEditMode && (
-            <Button variant="outline" size="sm" className="text-xs uppercase tracking-wider" type="button" onClick={openAddDialog}>
-              <Plus className="w-3 h-3 mr-2"/> Thêm đối tượng
+          {isManager && (
+            <Button 
+              variant={isEditMode ? "default" : "outline"}
+              size="sm" 
+              className={cn("text-xs uppercase tracking-wider", isEditMode && "bg-zinc-900")}
+              onClick={async () => {
+                if (isEditMode) {
+                  const result = await saveTables(tablesRef.current);
+                  if (result.success && result.tables) {
+                    setTables(result.tables);
+                  }
+                  setIsEditMode(false);
+                  setSelectedTable(null);
+                } else {
+                  setIsEditMode(true);
+                }
+              }}
+            >
+              {isEditMode ? <><Save className="w-3 h-3 mr-2"/> Lưu cấu hình</> : <><Edit3 className="w-3 h-3 mr-2"/> Cấu hình sơ đồ</>}
             </Button>
+          )}
+          {isEditMode && isManager && (
+            <>
+              <Button variant="outline" size="sm" className="text-xs uppercase tracking-wider" type="button" onClick={() => setIsSettingsOpen(true)}>
+                <Settings className="w-3 h-3 mr-2"/> Cài đặt sơ đồ
+              </Button>
+              <Button variant="outline" size="sm" className="text-xs uppercase tracking-wider" type="button" onClick={openAddDialog}>
+                <Plus className="w-3 h-3 mr-2"/> Thêm đối tượng
+              </Button>
+            </>
           )}
         </div>
       </div>
 
-      <div className="flex gap-4 shrink-0">
-        {areas.map(area => (
-          <button
-            key={area}
-            onClick={() => setCurrentArea(area)}
-            className={cn(
-              "text-xs font-semibold uppercase tracking-widest pb-2 border-b-2 transition-all",
-              currentArea === area ? "border-zinc-900 text-zinc-900" : "border-transparent text-muted-foreground hover:text-foreground"
+      <div className="flex justify-between items-center shrink-0">
+        <div className="flex gap-4">
+          {areas.map(area => (
+            <button
+              key={area}
+              onClick={() => setCurrentArea(area)}
+              className={cn(
+                "text-xs font-semibold uppercase tracking-widest pb-2 border-b-2 transition-all",
+                currentArea === area ? "border-zinc-900 text-zinc-900" : "border-transparent text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {area}
+            </button>
+          ))}
+        </div>
+        {isEditMode && isManager && (
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" className="text-[10px] uppercase tracking-wider" onClick={handleAreaAdd}>
+              <Plus className="w-3 h-3 mr-1" /> Thêm khu vực
+            </Button>
+            {currentArea && (
+              <>
+                <Button variant="ghost" size="sm" className="text-[10px] uppercase tracking-wider" onClick={() => handleAreaRename(currentArea)}>
+                  <Edit3 className="w-3 h-3 mr-1" /> Đổi tên
+                </Button>
+                <Button variant="ghost" size="sm" className="text-[10px] uppercase tracking-wider text-red-500 hover:text-red-600" onClick={() => handleAreaDelete(currentArea)}>
+                  <Trash2 className="w-3 h-3 mr-1" /> Xóa khu vực
+                </Button>
+              </>
             )}
-          >
-            {area}
-          </button>
-        ))}
+          </div>
+        )}
       </div>
 
       <div 
         ref={containerRef}
         className={cn(
-          "flex-1 relative bg-zinc-50 border border-zinc-200 rounded-lg overflow-hidden min-h-[500px]",
+          "relative bg-zinc-50 border border-zinc-200 rounded-lg overflow-auto mx-auto shadow-inner select-none",
           isEditMode ? "cursor-crosshair" : "cursor-default"
         )}
+        style={{
+          width: `${config.containerWidth}px`,
+          height: `${config.containerHeight}px`,
+          maxWidth: '100%',
+        }}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerUp}
@@ -419,257 +699,491 @@ export default function FloorPlanPage() {
       >
         <div 
           className="absolute inset-0 opacity-10 pointer-events-none" 
-          style={{ backgroundImage: 'linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px)', backgroundSize: '40px 40px' }}
+          style={{ 
+            backgroundImage: `linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px)`, 
+            backgroundSize: `${config.gridSize}px ${config.gridSize}px` 
+          }}
         />
 
         {tables.filter(t => t.area === currentArea).map(renderObject)}
       </div>
 
-      <div className="flex justify-center gap-8 text-[10px] uppercase tracking-[0.2em] font-medium text-zinc-400 shrink-0">
-        <div className="flex items-center"><div className="w-2 h-2 rounded-sm bg-zinc-200 border border-zinc-300 mr-2"></div> Available</div>
-        <div className="flex items-center"><div className="w-2 h-2 rounded-sm bg-zinc-800 mr-2"></div> Occupied</div>
-        <div className="flex items-center"><div className="w-2 h-2 rounded-sm bg-zinc-400 mr-2"></div> Reserved</div>
+      {contextMenu.visible && contextMenu.table && (
+        <>
+          <div className="fixed inset-0 z-[60]" onClick={closeContextMenu} />
+          <div 
+            className="fixed bg-zinc-900 text-white rounded-lg shadow-2xl py-1 min-w-[160px] z-[70] border border-zinc-800 animate-in fade-in zoom-in duration-100"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onContextMenu={e => e.preventDefault()}
+          >
+            <div className="px-3 py-1.5 border-b border-zinc-800 mb-1">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">{contextMenu.table.name}</p>
+            </div>
+            <button 
+              className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-800 flex items-center gap-2 transition-colors"
+              onClick={() => { toggleOrientation(); closeContextMenu(); }}
+            >
+              <RotateCw className="w-3.5 h-3.5" /> Xoay đối tượng
+            </button>
+            <button 
+              className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-800 flex items-center gap-2 transition-colors"
+              onClick={() => { if (contextMenu.table) duplicateTable(contextMenu.table); closeContextMenu(); }}
+            >
+              <Copy className="w-3.5 h-3.5" /> Nhân bản
+            </button>
+            <button 
+              className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-800 flex items-center gap-2 transition-colors"
+              onClick={() => { if (contextMenu.table) resetSize(contextMenu.table.id); closeContextMenu(); }}
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Đặt lại kích thước
+            </button>
+            <button 
+              className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-800 flex items-center gap-2 transition-colors"
+              onClick={() => { if (contextMenu.table) openEditDetails(contextMenu.table); closeContextMenu(); }}
+            >
+              <Edit3 className="w-3.5 h-3.5" /> Sửa chi tiết
+            </button>
+            <div className="h-px bg-zinc-800 my-1" />
+            <button 
+              className="w-full px-3 py-2 text-left text-xs hover:bg-red-950 text-red-400 flex items-center gap-2 transition-colors"
+              onClick={(e) => { if (contextMenu.table) handleDeleteObject(contextMenu.table, e as any); closeContextMenu(); }}
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Xóa đối tượng
+            </button>
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-6 text-[10px] uppercase tracking-[0.2em] font-black text-zinc-400">
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded-full bg-white border border-zinc-200" />
+          Trống
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-200" />
+          Đang dùng
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded-full bg-amber-400 shadow-sm shadow-amber-200" />
+          Đã đặt
+        </div>
       </div>
 
-      <Dialog open={addOpen} onOpenChange={(open) => { setAddOpen(open); if (!open) setAddFormError(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Thêm đối tượng</DialogTitle>
-            <DialogDescription>
-              Thêm bàn hoặc quầy vào khu vực đang xem. Sau khi tạo, kéo thả trong chế độ cấu hình để đặt vị trí.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleAddSubmit} className="space-y-4">
+      {/* Add Object Modal */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="sm:max-w-[500px] rounded-[2.5rem] border-none shadow-2xl p-0 overflow-hidden bg-white">
+          <div className="p-10 space-y-8">
             <div className="space-y-2">
-              <Label htmlFor="fp-type">Loại</Label>
-              <select
-                id="fp-type"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                value={addForm.type}
-                onChange={(e) =>
-                  setAddForm((f) => ({
-                    ...f,
-                    type: e.target.value as FloorObjectType,
-                  }))
-                }
-              >
-                <option value="table">Bàn</option>
-                <option value="bar">Quầy / Bar</option>
-              </select>
+              <h2 className="text-3xl font-black tracking-tighter uppercase italic">Tạo đối tượng mới</h2>
+              <p className="text-zinc-400 text-sm font-medium">Thêm bàn hoặc quầy pha chế vào sơ đồ hiện tại</p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="fp-name">Tên hiển thị</Label>
-              <Input
-                id="fp-name"
-                value={addForm.name}
-                onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder={addForm.type === 'bar' ? 'Quầy pha chế 2' : 'Bàn 06'}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="fp-area">Khu vực</Label>
-              <select
-                id="fp-area"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                value={addForm.area}
-                onChange={(e) => setAddForm((f) => ({ ...f, area: e.target.value }))}
-              >
-                {areas.map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
-              </select>
-            </div>
-            {addForm.type === 'table' && (
-              <div className="space-y-2">
-                <Label htmlFor="fp-cap">Số ghế</Label>
-                <select
-                  id="fp-cap"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  value={addForm.capacity}
-                  onChange={(e) =>
-                    setAddForm((f) => ({
-                      ...f,
-                      capacity: Number(e.target.value) as 2 | 4 | 6,
-                    }))
-                  }
-                >
-                  <option value={2}>2 ghế</option>
-                  <option value={4}>4 ghế</option>
-                  <option value={6}>6 ghế</option>
-                </select>
+
+            <form onSubmit={handleAddSubmit} className="space-y-8">
+              <div className="space-y-3">
+                <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Chọn loại đối tượng</Label>
+                <div className="grid grid-cols-2 gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setAddForm({ ...addForm, type: 'table' })}
+                    className={cn(
+                      "p-6 rounded-3xl border-2 transition-all flex flex-col items-center gap-3",
+                      addForm.type === 'table' ? "border-zinc-900 bg-zinc-900 text-white shadow-xl shadow-zinc-200" : "border-zinc-100 bg-zinc-50 text-zinc-400 hover:border-zinc-200"
+                    )}
+                  >
+                    <Coffee className="w-6 h-6" />
+                    <span className="text-xs font-bold uppercase tracking-widest">Bàn cafe</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setAddForm({ ...addForm, type: 'bar' })}
+                    className={cn(
+                      "p-6 rounded-3xl border-2 transition-all flex flex-col items-center gap-3",
+                      addForm.type === 'bar' ? "border-zinc-900 bg-zinc-900 text-white shadow-xl shadow-zinc-200" : "border-zinc-100 bg-zinc-50 text-zinc-400 hover:border-zinc-200"
+                    )}
+                  >
+                    <Plus className="w-6 h-6" />
+                    <span className="text-xs font-bold uppercase tracking-widest">Quầy bar</span>
+                  </button>
+                </div>
               </div>
-            )}
-            {addFormError ? (
-              <p className="text-sm text-destructive">{addFormError}</p>
-            ) : null}
-            <DialogFooter className="gap-2 sm:gap-0">
-              <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
-                Hủy
-              </Button>
-              <Button type="submit">Tạo đối tượng</Button>
-            </DialogFooter>
-          </form>
+
+              <div className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="fp-name" className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Tên hiển thị</Label>
+                  <Input
+                    id="fp-name"
+                    required
+                    className="h-14 rounded-2xl border-zinc-100 bg-zinc-50 focus:ring-zinc-900 px-6"
+                    value={addForm.name || ""}
+                    onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="fp-area" className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Khu vực</Label>
+                  <select
+                    id="fp-area"
+                    className="flex h-14 w-full rounded-2xl border border-zinc-100 bg-zinc-50 px-6 py-2 text-base font-medium focus:outline-none focus:ring-2 focus:ring-zinc-900 transition-all appearance-none"
+                    value={addForm.area}
+                    onChange={(e) => setAddForm({ ...addForm, area: e.target.value })}
+                  >
+                    {areas.map((a) => (
+                      <option key={a} value={a}>{a}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {addForm.type === 'table' && (
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Số ghế</Label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[2, 4, 6, 8].map(cap => (
+                        <button
+                          key={cap}
+                          type="button"
+                          onClick={() => setAddForm({ ...addForm, capacity: cap })}
+                          className={cn(
+                            "h-12 rounded-xl border-2 font-bold transition-all text-xs",
+                            addForm.capacity === cap ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-100 bg-white text-zinc-400"
+                          )}
+                        >
+                          {cap}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {addFormError && <p className="text-xs text-red-500 font-bold ml-1">{addFormError}</p>}
+
+              <div className="flex gap-3 pt-4">
+                <Button type="button" variant="outline" onClick={() => setAddOpen(false)} className="flex-1 h-16 rounded-2xl font-bold uppercase tracking-widest text-[10px]">Hủy</Button>
+                <Button type="submit" className="flex-[2] h-16 bg-zinc-900 text-white rounded-2xl font-bold uppercase tracking-widest text-[10px]">Tạo ngay</Button>
+              </div>
+            </form>
+          </div>
         </DialogContent>
       </Dialog>
 
-      {selectedTable && !isEditMode && !isReserveModalOpen && selectedTable.type === 'table' && (
-        <div className="fixed inset-0 bg-white/40 backdrop-blur-[2px] flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-white border border-zinc-200 p-8 shadow-2xl relative rounded-xl">
-            <button onClick={closeModals} className="absolute right-6 top-6 text-muted-foreground hover:text-foreground bg-zinc-100 p-1.5 rounded-full">
-              <X className="w-4 h-4" />
-            </button>
-            
-            <div className="space-y-8">
-              <div>
-                <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-400 mb-1">Quản lý bàn</h3>
-                <h2 className="text-3xl font-semibold tracking-tight">{selectedTable.name}</h2>
-                <div className="flex items-center mt-3 gap-2">
-                  <span className={cn("px-2.5 py-1 text-xs font-bold uppercase tracking-wider rounded-sm", getStatusColor(selectedTable.status))}>
-                    {selectedTable.status}
-                  </span>
-                  <span className="text-xs font-medium text-muted-foreground px-2 py-1 bg-zinc-100 rounded-sm">
-                    {selectedTable.capacity} Ghế
-                  </span>
+      {/* Reserve Modal */}
+      <Dialog open={isReserveModalOpen} onOpenChange={setIsReserveModalOpen}>
+        <DialogContent className="sm:max-w-[500px] rounded-[2.5rem] border-none shadow-2xl p-0 overflow-hidden bg-white">
+          {selectedTable && (
+            <div className="p-10 space-y-8">
+              <div className="space-y-2">
+                <h2 className="text-3xl font-black tracking-tighter uppercase italic">Đặt chỗ trước</h2>
+                <p className="text-zinc-400 text-sm font-medium">Giữ chỗ cho bàn {selectedTable.name}</p>
+              </div>
+
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                const res = await createBooking({
+                  tableId: selectedTable.id,
+                  customerName: reserveForm.customerName,
+                  customerPhone: reserveForm.phone,
+                  bookingTime: reserveForm.datetime,
+                });
+                if (res.success) {
+                  setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Đã đặt', customerName: reserveForm.customerName, customerPhone: reserveForm.phone, bookingTime: reserveForm.datetime } : t));
+                  setIsReserveModalOpen(false);
+                }
+              }} className="space-y-6">
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Tên khách hàng</Label>
+                    <Input
+                      required
+                      className="h-14 rounded-2xl border-zinc-100 bg-zinc-50 focus:ring-zinc-900 px-6"
+                      value={reserveForm.customerName}
+                      onChange={(e) => setReserveForm({ ...reserveForm, customerName: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Số điện thoại</Label>
+                    <Input
+                      required
+                      type="tel"
+                      className="h-14 rounded-2xl border-zinc-100 bg-zinc-50 focus:ring-zinc-900 px-6"
+                      value={reserveForm.phone}
+                      onChange={(e) => setReserveForm({ ...reserveForm, phone: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 ml-1">Thời gian đến</Label>
+                    <Input
+                      required
+                      type="datetime-local"
+                      className="h-14 rounded-2xl border-zinc-100 bg-zinc-50 focus:ring-zinc-900 px-6"
+                      value={reserveForm.datetime}
+                      onChange={(e) => setReserveForm({ ...reserveForm, datetime: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <Button type="button" variant="outline" onClick={() => setIsReserveModalOpen(false)} className="flex-1 h-16 rounded-2xl font-bold uppercase tracking-widest text-[10px]">Hủy</Button>
+                  <Button type="submit" className="flex-[2] h-16 bg-zinc-900 text-white rounded-2xl font-bold uppercase tracking-widest text-[10px]">Xác nhận đặt</Button>
+                </div>
+              </form>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isEditDetailsOpen} onOpenChange={setIsEditDetailsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Chỉnh sửa chi tiết</DialogTitle>
+          </DialogHeader>
+          {editForm && (
+            <form onSubmit={handleEditSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-name">Tên hiển thị</Label>
+                  <Input id="edit-name" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-area">Khu vực</Label>
+                  <select
+                    id="edit-area"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={editForm.area}
+                    onChange={e => setEditForm({...editForm, area: e.target.value})}
+                  >
+                    {areas.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
                 </div>
               </div>
               
-              <div className="grid gap-3">
-                {selectedTable.status === 'Trống' && (
-                  <>
-                    <Button className="h-14 text-sm font-bold uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800" onClick={() => {
-                       setTables(prev => {
-                         const next = prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Đang có khách' as const, reservation: undefined } : t);
-                         persistFloorObjects(next);
-                         return next;
-                       });
-                       router.push(`/dashboard/order/${selectedTable.id}`);
-                       closeModals();
-                    }}>Mở bàn mới</Button>
-                    <Button variant="outline" className="h-14 text-sm font-bold uppercase tracking-widest border-zinc-200 hover:bg-zinc-50" onClick={() => {
-                      setReserveForm({
-                        customerName: selectedTable.reservation?.customerName ?? "",
-                        phone: selectedTable.reservation?.phone ?? "",
-                        datetime: selectedTable.reservation?.datetime ?? "",
-                      });
-                      setIsReserveModalOpen(true);
-                    }}>Đặt chỗ trước</Button>
-                  </>
-                )}
-                
-                {selectedTable.status === 'Đang có khách' && (
-                  <Button className="h-14 text-sm font-bold uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800" onClick={() => router.push(`/dashboard/order/${selectedTable.id}`)}>
-                    Vào Order / Thanh toán
-                  </Button>
-                )}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-width">Chiều rộng (px)</Label>
+                  <Input id="edit-width" type="number" value={editForm.width || 0} onChange={e => setEditForm({...editForm, width: parseInt(e.target.value)})} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-height">Chiều cao (px)</Label>
+                  <Input id="edit-height" type="number" value={editForm.height || 0} onChange={e => setEditForm({...editForm, height: parseInt(e.target.value)})} />
+                </div>
+              </div>
 
-                {selectedTable.status === 'Đã đặt' && (
-                  <>
-                    {selectedTable.reservation && (
-                      <div className="rounded-lg border border-border bg-zinc-50 p-4 text-sm space-y-1.5">
-                        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Đặt chỗ</p>
-                        <p><span className="text-muted-foreground">Khách:</span> {selectedTable.reservation.customerName}</p>
-                        <p><span className="text-muted-foreground">SĐT:</span> {selectedTable.reservation.phone}</p>
-                        <p><span className="text-muted-foreground">Giờ:</span> {selectedTable.reservation.datetime.replace('T', ' ')}</p>
-                      </div>
-                    )}
-                    <Button className="h-14 text-sm font-bold uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800" onClick={() => {
-                       setTables(prev => {
-                         const next = prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Đang có khách' as const, reservation: undefined } : t);
-                         persistFloorObjects(next);
-                         return next;
-                       });
-                       closeModals();
-                    }}>Khách đã đến (Mở bàn)</Button>
-                    <Button variant="ghost" className="h-14 text-sm font-bold uppercase tracking-widest text-red-600 hover:bg-red-50" onClick={() => {
-                      setTables(prev => {
-                        const next = prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Trống' as const, reservation: undefined } : t);
-                        persistFloorObjects(next);
-                        return next;
-                      });
-                      closeModals();
-                    }}>Hủy đặt chỗ</Button>
-                  </>
-                )}
+              {editForm.type === 'table' && (
+                <div className="space-y-2">
+                  <Label htmlFor="edit-cap">Số ghế</Label>
+                  <select
+                    id="edit-cap"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={editForm.capacity}
+                    onChange={e => setEditForm({...editForm, capacity: parseInt(e.target.value) as any})}
+                  >
+                    <option value={2}>2 ghế</option>
+                    <option value={4}>4 ghế</option>
+                    <option value={6}>6 ghế</option>
+                  </select>
+                </div>
+              )}
+
+              <DialogFooter>
+                <Button type="submit">Lưu thay đổi</Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cấu hình sơ đồ</DialogTitle>
+            <DialogDescription>Điều chỉnh kích thước quán và lưới tọa độ.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Rộng quán (px)</Label>
+                <Input type="number" value={config.containerWidth} onChange={e => setConfig({...config, containerWidth: parseInt(e.target.value)})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Dài quán (px)</Label>
+                <Input type="number" value={config.containerHeight} onChange={e => setConfig({...config, containerHeight: parseInt(e.target.value)})} />
               </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {isReserveModalOpen && selectedTable && selectedTable.type === 'table' && (
-        <div className="fixed inset-0 bg-white/60 backdrop-blur-[2px] flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-white border border-zinc-200 p-8 shadow-xl relative rounded-xl">
-            <button onClick={() => setIsReserveModalOpen(false)} className="absolute right-6 top-6 text-muted-foreground hover:text-foreground bg-zinc-100 p-1.5 rounded-full">
-              <X className="w-4 h-4" />
-            </button>
             
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const customerName = reserveForm.customerName.trim();
-              const phone = reserveForm.phone.trim();
-              const datetime = reserveForm.datetime.trim();
-              if (!customerName || !phone || !datetime) return;
-              setTables(prev => {
-                const next = prev.map(t =>
-                  t.id === selectedTable.id
-                    ? {
-                        ...t,
-                        status: "Đã đặt" as const,
-                        reservation: { customerName, phone, datetime },
-                      }
-                    : t
-                );
-                persistFloorObjects(next);
-                return next;
-              });
-              setIsReserveModalOpen(false);
-              closeModals();
-            }} className="space-y-8">
-              <div>
-                <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-400 mb-1">Reservation</h3>
-                <h2 className="text-2xl font-semibold tracking-tight">{selectedTable.name}</h2>
+            <div className="flex items-center justify-between p-3 border rounded-lg">
+              <div className="space-y-0.5">
+                <Label>Snap to grid (Hút vào lưới)</Label>
+                <p className="text-[10px] text-muted-foreground">Giúp căn chỉnh các bàn thẳng hàng</p>
               </div>
-              
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <Label htmlFor="res-name" className="text-[10px] uppercase tracking-widest text-muted-foreground font-bold">Khách hàng</Label>
-                  <Input
-                    id="res-name"
-                    required
-                    value={reserveForm.customerName}
-                    onChange={(e) => setReserveForm((f) => ({ ...f, customerName: e.target.value }))}
-                    className="h-10 border-t-0 border-x-0 border-b border-zinc-200 rounded-none px-0 shadow-none focus-visible:ring-0 focus-visible:border-zinc-900"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="res-phone" className="text-[10px] uppercase tracking-widest text-muted-foreground font-bold">Điện thoại</Label>
-                  <Input
-                    id="res-phone"
-                    type="tel"
-                    required
-                    value={reserveForm.phone}
-                    onChange={(e) => setReserveForm((f) => ({ ...f, phone: e.target.value }))}
-                    className="h-10 border-t-0 border-x-0 border-b border-zinc-200 rounded-none px-0 shadow-none focus-visible:ring-0 focus-visible:border-zinc-900"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="res-time" className="text-[10px] uppercase tracking-widest text-muted-foreground font-bold">Thời gian</Label>
-                  <Input
-                    id="res-time"
-                    type="datetime-local"
-                    required
-                    value={reserveForm.datetime}
-                    onChange={(e) => setReserveForm((f) => ({ ...f, datetime: e.target.value }))}
-                    className="h-10 border-t-0 border-x-0 border-b border-zinc-200 rounded-none px-0 shadow-none focus-visible:ring-0 focus-visible:border-zinc-900"
-                  />
+              <input 
+                type="checkbox" 
+                className="w-4 h-4"
+                checked={config.snapToGrid} 
+                onChange={e => setConfig({...config, snapToGrid: e.target.checked})} 
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Kích thước lưới (px)</Label>
+              <Input type="number" value={config.gridSize} onChange={e => setConfig({...config, gridSize: parseInt(e.target.value)})} />
+            </div>
+
+            <DialogFooter>
+              <Button onClick={() => { persistFloorConfig(config); setIsSettingsOpen(false); }}>Lưu cấu hình</Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* Table Management Modal */}
+      <Dialog open={isTableManageModalOpen} onOpenChange={setIsTableManageModalOpen}>
+        <DialogContent className="sm:max-w-[450px] rounded-3xl border-none shadow-2xl p-0 overflow-hidden">
+          {managedTable && (
+            <div className="flex flex-col">
+              {/* Header with status color */}
+              <div className={cn(
+                "p-8 text-white flex flex-col gap-1",
+                managedTable.status === 'Đã đặt' ? "bg-zinc-500" : 
+                managedTable.status === 'Đang dùng' ? "bg-zinc-900" : "bg-zinc-100 text-zinc-900"
+              )}>
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h2 className="text-3xl font-black uppercase tracking-tighter">{managedTable.name}</h2>
+                    <p className="text-[10px] uppercase font-bold tracking-[0.2em] opacity-70">
+                      {managedTable.area} • {managedTable.capacity} ghế
+                    </p>
+                  </div>
+                  <div className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">
+                    {managedTable.status}
+                  </div>
                 </div>
               </div>
 
-              <Button type="submit" className="w-full h-12 text-xs font-bold uppercase tracking-widest bg-zinc-900 hover:bg-zinc-800">Xác nhận đặt bàn</Button>
-            </form>
-          </div>
-        </div>
-      )}
+              <div className="p-8 space-y-8">
+                {/* Customer Info Section */}
+                {(managedTable.customerName || managedTable.bookingTime) ? (
+                  <div className="space-y-4">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Thông tin khách hàng</p>
+                    <div className="grid grid-cols-1 gap-4">
+                      <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-2xl">
+                        <div className="w-10 h-10 rounded-full bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
+                          <User className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Tên khách hàng</p>
+                          <p className="text-sm font-bold text-zinc-900">{managedTable.customerName || "Khách lẻ"}</p>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-2xl">
+                        <div className="w-10 h-10 rounded-full bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
+                          <Phone className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Số điện thoại</p>
+                          <p className="text-sm font-bold text-zinc-900">{managedTable.customerPhone || "---"}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-2xl">
+                        <div className="w-10 h-10 rounded-full bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
+                          <Clock className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Giờ hẹn / Thời gian đặt</p>
+                          <p className="text-sm font-bold text-zinc-900">{managedTable.bookingTime || "---"}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="py-6 text-center border-2 border-dashed border-zinc-100 rounded-3xl">
+                    <p className="text-zinc-400 text-xs font-medium italic">Bàn trống, chưa có thông tin khách</p>
+                  </div>
+                )}
+
+                {/* Actions Grid */}
+                <div className="grid grid-cols-2 gap-3">
+                  {managedTable.status === 'Đã đặt' && (
+                    <>
+                      <Button 
+                        className="h-14 bg-zinc-900 text-white rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
+                        onClick={async () => {
+                          const res = await confirmCustomerArrival(managedTable.id);
+                          if (res.success) {
+                            setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Đang dùng' } : t));
+                            setIsTableManageModalOpen(false);
+                          }
+                        }}
+                      >
+                        <CheckCircle2 className="w-4 h-4" /> Xác nhận khách đến
+                      </Button>
+                      <Button 
+                        variant="outline"
+                        className="h-14 border-red-100 text-red-500 hover:bg-red-50 rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
+                        onClick={async () => {
+                          if (confirm("Hủy đặt bàn này?")) {
+                            const res = await cancelBooking(managedTable.id);
+                            if (res.success) {
+                              setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null } : t));
+                              setIsTableManageModalOpen(false);
+                            }
+                          }
+                        }}
+                      >
+                        <X className="w-4 h-4" /> Hủy đặt bàn
+                      </Button>
+                    </>
+                  )}
+
+                  {managedTable.status === 'Đang dùng' && (
+                    <>
+                      <Button 
+                        variant="outline"
+                        className="h-14 border-zinc-200 rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
+                        onClick={() => {
+                          router.push(`/dashboard/orders?tableId=${managedTable.id}`);
+                        }}
+                      >
+                        <ShoppingCart className="w-4 h-4" /> Order nước
+                      </Button>
+                      
+                      <Button 
+                        variant="destructive"
+                        className="h-14 bg-red-50 text-red-600 hover:bg-red-100 border-none rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
+                        onClick={async () => {
+                          if (confirm("Xác nhận thanh toán và trả bàn?")) {
+                            const res = await checkoutTable(managedTable.id);
+                            if (res.success) {
+                              setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null } : t));
+                              setIsTableManageModalOpen(false);
+                            }
+                          }
+                        }}
+                      >
+                        <LogOutIcon className="w-4 h-4" /> Checkout
+                      </Button>
+                    </>
+                  )}
+                  
+                  {managedTable.status === 'Trống' && (
+                    <Button 
+                      className="col-span-2 h-14 bg-zinc-900 text-white rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
+                      onClick={() => {
+                        // Open reserve modal for this table
+                        setSelectedTable(managedTable);
+                        setIsReserveModalOpen(true);
+                        setIsTableManageModalOpen(false);
+                      }}
+                    >
+                      <ArrowRight className="w-4 h-4" /> Mở bàn mới
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+
