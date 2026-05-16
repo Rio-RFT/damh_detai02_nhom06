@@ -292,7 +292,7 @@ export default function FloorPlanPage() {
     } else {
       newName = `${obj.name} (Copy)`;
     }
-    const newObj: FloorObject = { ...obj, id: nextId, name: newName, posX: obj.posX + 2, posY: obj.posY + 2, status: 'Trống', reservation: undefined };
+    const newObj: FloorObject = { ...obj, id: nextId, name: newName, posX: obj.posX + 2, posY: obj.posY + 2, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null };
     setTables(prev => [...prev, newObj]);
     setSelectedTable(newObj);
   };
