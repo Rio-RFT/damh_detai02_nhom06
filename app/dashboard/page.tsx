@@ -29,6 +29,7 @@ import {
 } from '@/lib/floor-plan-data';
 import { getTables, saveTables, deleteTable } from '@/lib/floor-plan-actions';
 import { confirmCustomerArrival, checkoutTable, cancelBooking } from '@/lib/table-actions';
+import { getActiveOrder } from '@/lib/order-actions';
 
 export default function FloorPlanPage() {
   const [tables, setTables] = useState<FloorObject[]>([]);
@@ -55,6 +56,8 @@ export default function FloorPlanPage() {
     phone: "",
     datetime: "",
   });
+  const [activeOrder, setActiveOrder] = useState<any>(null);
+  const [isLoadingOrder, setIsLoadingOrder] = useState(false);
 
   const [draggingTableId, setDraggingTableId] = useState<number | null>(null);
   const [resizingTableId, setResizingTableId] = useState<number | null>(null);
@@ -158,6 +161,20 @@ export default function FloorPlanPage() {
     };
   }, []);
 
+  useEffect(() => {
+    async function fetchOrder() {
+      if (isTableManageModalOpen && managedTable) {
+        setIsLoadingOrder(true);
+        const order = await getActiveOrder(managedTable.id);
+        setActiveOrder(order);
+        setIsLoadingOrder(false);
+      } else {
+        setActiveOrder(null);
+      }
+    }
+    fetchOrder();
+  }, [isTableManageModalOpen, managedTable]);
+
   const isManager = user?.role === 'Quản lý';
   useEffect(() => {
     tablesRef.current = tables;
@@ -190,7 +207,9 @@ export default function FloorPlanPage() {
     e.stopPropagation();
     setDraggingTableId(id);
     setSelectedTable(tablesRef.current.find(t => t.id === id) || null);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    if (containerRef.current) {
+      containerRef.current.setPointerCapture(e.pointerId);
+    }
   };
 
   const handleResizeDown = (e: React.PointerEvent, table: FloorObject) => {
@@ -201,7 +220,9 @@ export default function FloorPlanPage() {
     const h = table.height || (table.type === 'bar' ? (isVert ? 250 : 80) : (isVert ? (table.capacity > 2 ? 100 : 60) : 60));
     setResizingTableId(table.id);
     setResizeStart({ x: e.clientX, y: e.clientY, w, h });
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    if (containerRef.current) {
+      containerRef.current.setPointerCapture(e.pointerId);
+    }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -341,6 +362,12 @@ export default function FloorPlanPage() {
   const resetSize = (id: number) => {
     if (!isManager) return;
     setTables(prev => prev.map(t => t.id === id ? { ...t, width: undefined, height: undefined } : t));
+  };
+
+  const openEditDetails = (table: FloorObject) => {
+    if (!isManager) return;
+    setEditForm(table);
+    setIsEditDetailsOpen(true);
   };
 
   const handleContextMenu = (e: React.MouseEvent, table: FloorObject) => {
@@ -1035,151 +1062,202 @@ export default function FloorPlanPage() {
       </Dialog>
       {/* Table Management Modal */}
       <Dialog open={isTableManageModalOpen} onOpenChange={setIsTableManageModalOpen}>
-        <DialogContent className="sm:max-w-[450px] rounded-3xl border-none shadow-2xl p-0 overflow-hidden">
+        <DialogContent className="sm:max-w-[900px] max-h-[85vh] rounded-[2.5rem] border-none shadow-2xl p-0 overflow-hidden bg-white flex flex-col">
           {managedTable && (
-            <div className="flex flex-col">
-              {/* Header with status color */}
+            <>
+              {/* Header with status color - Fixed at top */}
               <div className={cn(
-                "p-8 text-white flex flex-col gap-1",
+                "p-6 text-white flex flex-col gap-1 shrink-0",
                 managedTable.status === 'Đã đặt' ? "bg-zinc-500" : 
                 managedTable.status === 'Đang dùng' ? "bg-zinc-900" : "bg-zinc-100 text-zinc-900"
               )}>
                 <div className="flex justify-between items-start">
                   <div>
-                    <h2 className="text-3xl font-black uppercase tracking-tighter">{managedTable.name}</h2>
-                    <p className="text-[10px] uppercase font-bold tracking-[0.2em] opacity-70">
-                      {managedTable.area} • {managedTable.capacity} ghế
+                    <h2 className="text-3xl font-black uppercase tracking-tighter italic leading-none">{managedTable.name}</h2>
+                    <p className="text-[10px] uppercase font-bold tracking-[0.2em] opacity-70 mt-1">
+                      {managedTable.area} • {managedTable.capacity} khách
                     </p>
                   </div>
-                  <div className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">
+                  <div className="bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest border border-white/20">
                     {managedTable.status}
                   </div>
                 </div>
               </div>
 
-              <div className="p-8 space-y-8">
-                {/* Customer Info Section */}
-                {(managedTable.customerName || managedTable.bookingTime) ? (
+              {/* Content Area - Scrollable if needed */}
+              <div className="flex flex-1 overflow-hidden">
+                {/* Left Side: Customer Info & General Actions */}
+                <div className="flex-1 p-8 border-r border-zinc-50 space-y-8 overflow-y-auto custom-scrollbar">
                   <div className="space-y-4">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Thông tin khách hàng</p>
-                    <div className="grid grid-cols-1 gap-4">
-                      <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-2xl">
-                        <div className="w-10 h-10 rounded-full bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
-                          <User className="w-5 h-5" />
+                    <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-400">Thông tin chi tiết</p>
+                    {(managedTable.customerName || managedTable.bookingTime) ? (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3 bg-zinc-50 p-4 rounded-[1.5rem]">
+                          <div className="w-10 h-10 rounded-xl bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
+                            <User className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <p className="text-[9px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Tên khách hàng</p>
+                            <p className="text-sm font-black text-zinc-900">{managedTable.customerName || "Khách lẻ"}</p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Tên khách hàng</p>
-                          <p className="text-sm font-bold text-zinc-900">{managedTable.customerName || "Khách lẻ"}</p>
+                        
+                        <div className="flex items-center gap-3 bg-zinc-50 p-4 rounded-[1.5rem]">
+                          <div className="w-10 h-10 rounded-xl bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
+                            <Phone className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <p className="text-[9px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Số điện thoại</p>
+                            <p className="text-sm font-black text-zinc-900">{managedTable.customerPhone || "Chưa cập nhật"}</p>
+                          </div>
                         </div>
-                      </div>
-                      
-                      <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-2xl">
-                        <div className="w-10 h-10 rounded-full bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
-                          <Phone className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Số điện thoại</p>
-                          <p className="text-sm font-bold text-zinc-900">{managedTable.customerPhone || "---"}</p>
-                        </div>
-                      </div>
 
-                      <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-2xl">
-                        <div className="w-10 h-10 rounded-full bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
-                          <Clock className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Giờ hẹn / Thời gian đặt</p>
-                          <p className="text-sm font-bold text-zinc-900">{managedTable.bookingTime || "---"}</p>
+                        <div className="flex items-center gap-3 bg-zinc-50 p-4 rounded-[1.5rem]">
+                          <div className="w-10 h-10 rounded-xl bg-white border border-zinc-100 flex items-center justify-center text-zinc-400">
+                            <Clock className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <p className="text-[9px] uppercase font-bold text-zinc-400 tracking-tight leading-none mb-1">Giờ hẹn đặt bàn</p>
+                            <p className="text-sm font-black text-zinc-900">{managedTable.bookingTime || "---"}</p>
+                          </div>
                         </div>
                       </div>
+                    ) : (
+                      <div className="py-8 text-center border-2 border-dashed border-zinc-100 rounded-[2rem] bg-zinc-50/30">
+                        <ShoppingCart className="w-6 h-6 text-zinc-200 mx-auto mb-3" />
+                        <p className="text-zinc-400 text-[10px] font-bold uppercase tracking-widest italic">Bàn trống</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions Grid */}
+                  <div className="space-y-4">
+                    <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-400">Thao tác vận hành</p>
+                    <div className="grid grid-cols-1 gap-2">
+                      {managedTable.status === 'Đã đặt' && (
+                        <div className="flex gap-2">
+                          <Button 
+                            className="flex-1 h-14 bg-zinc-900 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] flex gap-2 shadow-lg shadow-zinc-200"
+                            onClick={async () => {
+                              const res = await confirmCustomerArrival(managedTable.id);
+                              if (res.success) {
+                                setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Đang dùng' } : t));
+                                setIsTableManageModalOpen(false);
+                              }
+                            }}
+                          >
+                            <CheckCircle2 className="w-4 h-4" /> Khách đến
+                          </Button>
+                          <Button 
+                            variant="outline"
+                            className="h-14 px-5 border-red-100 text-red-500 hover:bg-red-50 rounded-2xl"
+                            onClick={async () => {
+                              if (confirm("Hủy đặt bàn?")) {
+                                const res = await cancelBooking(managedTable.id);
+                                if (res.success) {
+                                  setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null } : t));
+                                  setIsTableManageModalOpen(false);
+                                }
+                              }
+                            }}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+
+                      {managedTable.status === 'Đang dùng' && (
+                        <Button 
+                          variant="outline"
+                          className="h-14 border-zinc-200 rounded-2xl font-black uppercase tracking-widest text-[10px] flex gap-2"
+                          onClick={() => {
+                            router.push(`/dashboard/orders?tableId=${managedTable.id}`);
+                          }}
+                        >
+                          <ShoppingCart className="w-4 h-4" /> Order món
+                        </Button>
+                      )}
+                      
+                      {managedTable.status === 'Trống' && (
+                        <Button 
+                          className="h-14 bg-zinc-900 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] flex gap-2"
+                          onClick={() => {
+                            setSelectedTable(managedTable);
+                            setIsReserveModalOpen(true);
+                            setIsTableManageModalOpen(false);
+                          }}
+                        >
+                          <Plus className="w-4 h-4" /> Đặt bàn
+                        </Button>
+                      )}
                     </div>
                   </div>
-                ) : (
-                  <div className="py-6 text-center border-2 border-dashed border-zinc-100 rounded-3xl">
-                    <p className="text-zinc-400 text-xs font-medium italic">Bàn trống, chưa có thông tin khách</p>
-                  </div>
-                )}
+                </div>
 
-                {/* Actions Grid */}
-                <div className="grid grid-cols-2 gap-3">
-                  {managedTable.status === 'Đã đặt' && (
-                    <>
-                      <Button 
-                        className="h-14 bg-zinc-900 text-white rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
-                        onClick={async () => {
-                          const res = await confirmCustomerArrival(managedTable.id);
-                          if (res.success) {
-                            setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Đang dùng' } : t));
-                            setIsTableManageModalOpen(false);
-                          }
-                        }}
-                      >
-                        <CheckCircle2 className="w-4 h-4" /> Xác nhận khách đến
-                      </Button>
-                      <Button 
-                        variant="outline"
-                        className="h-14 border-red-100 text-red-500 hover:bg-red-50 rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
-                        onClick={async () => {
-                          if (confirm("Hủy đặt bàn này?")) {
-                            const res = await cancelBooking(managedTable.id);
-                            if (res.success) {
-                              setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null } : t));
-                              setIsTableManageModalOpen(false);
-                            }
-                          }
-                        }}
-                      >
-                        <X className="w-4 h-4" /> Hủy đặt bàn
-                      </Button>
-                    </>
-                  )}
-
-                  {managedTable.status === 'Đang dùng' && (
-                    <>
-                      <Button 
-                        variant="outline"
-                        className="h-14 border-zinc-200 rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
-                        onClick={() => {
-                          router.push(`/dashboard/orders?tableId=${managedTable.id}`);
-                        }}
-                      >
-                        <ShoppingCart className="w-4 h-4" /> Order nước
-                      </Button>
+                {/* Right Side: Order Details */}
+                <div className="flex-1 bg-zinc-50/50 p-8 flex flex-col overflow-hidden">
+                  {activeOrder ? (
+                    <div className="flex flex-col h-full overflow-hidden">
+                      <div className="flex items-center justify-between mb-4 shrink-0">
+                        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-400">Đơn hàng</p>
+                        <span className="text-[8px] font-black text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full uppercase tracking-widest">Active</span>
+                      </div>
                       
-                      <Button 
-                        variant="destructive"
-                        className="h-14 bg-red-50 text-red-600 hover:bg-red-100 border-none rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
-                        onClick={async () => {
-                          if (confirm("Xác nhận thanh toán và trả bàn?")) {
-                            const res = await checkoutTable(managedTable.id);
-                            if (res.success) {
-                              setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null } : t));
-                              setIsTableManageModalOpen(false);
+                      <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-3">
+                        {activeOrder.items.map((item: any) => (
+                          <div key={item.id} className="flex gap-3 items-center bg-white p-3 rounded-[1.25rem] border border-zinc-100/50 shadow-sm">
+                            <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 bg-zinc-100">
+                              <img src={item.product.imageUrl || "https://images.unsplash.com/photo-1541167760496-1628856ab772?w=100&h=100&fit=crop"} alt={item.product.name} className="w-full h-full object-cover" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-black text-zinc-900 truncate">{item.product.name}</p>
+                              <p className="text-[10px] text-zinc-400 font-bold uppercase">{item.quantity} x {new Intl.NumberFormat('vi-VN').format(item.price)} ₫</p>
+                            </div>
+                            <span className="text-xs font-black text-zinc-900">
+                              {new Intl.NumberFormat('vi-VN').format(item.quantity * item.price)} ₫
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="pt-6 mt-4 border-t border-zinc-200/50 space-y-4 shrink-0">
+                        <div className="flex justify-between items-end">
+                          <div className="space-y-0.5">
+                            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-zinc-400">Tổng thanh toán</span>
+                            <div className="text-2xl font-black tracking-tighter text-zinc-900 leading-none">
+                              {new Intl.NumberFormat('vi-VN').format(activeOrder.totalPrice)} ₫
+                            </div>
+                          </div>
+                        </div>
+
+                        <Button 
+                          variant="destructive"
+                          className="w-full h-14 bg-red-600 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] flex gap-2 shadow-xl shadow-red-100 hover:bg-red-700"
+                          onClick={async () => {
+                            if (confirm("Xác nhận thanh toán?")) {
+                              const res = await checkoutTable(managedTable.id);
+                              if (res.success) {
+                                setTables(prev => prev.map(t => t.id === managedTable.id ? { ...t, status: 'Trống', customerName: null, customerPhone: null, bookingTime: null } : t));
+                                setIsTableManageModalOpen(false);
+                              }
                             }
-                          }
-                        }}
-                      >
-                        <LogOutIcon className="w-4 h-4" /> Checkout
-                      </Button>
-                    </>
-                  )}
-                  
-                  {managedTable.status === 'Trống' && (
-                    <Button 
-                      className="col-span-2 h-14 bg-zinc-900 text-white rounded-2xl font-bold uppercase tracking-widest text-[11px] flex gap-2"
-                      onClick={() => {
-                        // Open reserve modal for this table
-                        setSelectedTable(managedTable);
-                        setIsReserveModalOpen(true);
-                        setIsTableManageModalOpen(false);
-                      }}
-                    >
-                      <ArrowRight className="w-4 h-4" /> Mở bàn mới
-                    </Button>
+                          }}
+                        >
+                          <LogOutIcon className="w-4 h-4" /> Thanh toán
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center space-y-3 opacity-30">
+                      <div className="w-16 h-16 rounded-[2rem] bg-zinc-100 flex items-center justify-center border-2 border-dashed border-zinc-200">
+                        <ShoppingCart className="w-6 h-6 text-zinc-300" />
+                      </div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 italic">Chưa có đơn</p>
+                    </div>
                   )}
                 </div>
               </div>
-            </div>
+            </>
           )}
         </DialogContent>
       </Dialog>

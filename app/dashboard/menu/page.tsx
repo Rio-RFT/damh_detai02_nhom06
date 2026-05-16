@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Plus, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   INITIAL_MENU_PRODUCTS,
   loadMenuProducts,
@@ -38,19 +39,33 @@ export default function MenuManagementPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [formError, setFormError] = useState<string | null>(null);
+  const [user, setUser] = useState<{ role: string } | null>(null);
 
   useEffect(() => {
     setMenuItems(loadMenuProducts());
+    
+    // Fetch user info
+    fetch('/api/auth/me').then(res => {
+      if (res.ok) return res.json();
+    }).then(data => {
+      if (data) setUser(data.user);
+    });
   }, []);
 
-  const categorySuggestions = useMemo(() => {
+  const isManager = user?.role === 'Quản lý';
+
+  const [activeCategory, setActiveCategory] = useState("Tất cả");
+
+  const categories = useMemo(() => {
     const set = new Set(menuItems.map((i) => i.category.trim()).filter(Boolean));
-    return Array.from(set).sort();
+    return ["Tất cả", ...Array.from(set).sort()];
   }, [menuItems]);
 
-  const filtered = menuItems.filter((item) =>
-    item.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = menuItems.filter((item) => {
+    const matchesSearch = item.name.toLowerCase().includes(search.toLowerCase());
+    const matchesCategory = activeCategory === "Tất cả" || item.category === activeCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   const resetForm = () => {
     setForm(emptyForm);
@@ -137,15 +152,34 @@ export default function MenuManagementPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <Button
-            type="button"
-            variant="outline"
-            className="text-xs tracking-wider uppercase h-9"
-            onClick={() => setAddOpen(true)}
-          >
-            <Plus className="w-3 h-3 mr-2" /> Thêm món
-          </Button>
+          {isManager && (
+            <Button
+              type="button"
+              variant="outline"
+              className="text-xs tracking-wider uppercase h-9"
+              onClick={() => setAddOpen(true)}
+            >
+              <Plus className="w-3 h-3 mr-2" /> Thêm món
+            </Button>
+          )}
         </div>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
+        {categories.map((cat) => (
+          <button
+            key={cat}
+            onClick={() => setActiveCategory(cat)}
+            className={cn(
+              "px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap",
+              activeCategory === cat
+                ? "bg-zinc-900 text-white shadow-lg"
+                : "bg-white text-zinc-400 border border-zinc-100 hover:border-zinc-300"
+            )}
+          >
+            {cat}
+          </button>
+        ))}
       </div>
 
       <Dialog open={addOpen} onOpenChange={handleAddOpenChange}>
@@ -183,7 +217,7 @@ export default function MenuManagementPage() {
                 required
               />
               <datalist id="menu-category-list">
-                {categorySuggestions.map((c) => (
+                {categories.filter(c => c !== "Tất cả").map((c) => (
                   <option key={c} value={c} />
                 ))}
               </datalist>
@@ -281,9 +315,11 @@ export default function MenuManagementPage() {
               <th className="px-6 py-4 font-medium text-xs uppercase tracking-wider text-muted-foreground">
                 Trạng thái
               </th>
-              <th className="px-6 py-4 text-right font-medium text-xs uppercase tracking-wider text-muted-foreground">
-                Thao tác
-              </th>
+              {isManager && (
+                <th className="px-6 py-4 text-right font-medium text-xs uppercase tracking-wider text-muted-foreground">
+                  Thao tác
+                </th>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -313,7 +349,7 @@ export default function MenuManagementPage() {
                   {item.category}
                 </td>
                 <td className="px-6 py-4 font-medium">
-                  {item.price.toLocaleString()} ₫
+                  {new Intl.NumberFormat('vi-VN').format(item.price)} ₫
                 </td>
                 <td className="px-6 py-4">
                   <span
@@ -326,18 +362,20 @@ export default function MenuManagementPage() {
                     {item.status}
                   </span>
                 </td>
-                <td className="px-6 py-4 text-right whitespace-nowrap">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
-                    onClick={() => handleDelete(item)}
-                  >
-                    <Trash2 className="w-3.5 h-3.5 mr-1.5 shrink-0" />
-                    Xóa món
-                  </Button>
-                </td>
+                {isManager && (
+                  <td className="px-6 py-4 text-right whitespace-nowrap">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => handleDelete(item)}
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+                      Xóa món
+                    </Button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
