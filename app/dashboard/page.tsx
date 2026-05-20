@@ -30,6 +30,7 @@ import {
 import { getTables, saveTables, deleteTable } from '@/lib/floor-plan-actions';
 import { confirmCustomerArrival, checkoutTable, cancelBooking } from '@/lib/table-actions';
 import { getActiveOrder } from '@/lib/order-actions';
+import { createBooking } from '@/lib/booking-actions';
 
 export default function FloorPlanPage() {
   const [tables, setTables] = useState<FloorObject[]>([]);
@@ -906,12 +907,12 @@ export default function FloorPlanPage() {
 
               <form onSubmit={async (e) => {
                 e.preventDefault();
-                const res = await createBooking({
-                  tableId: selectedTable.id,
-                  customerName: reserveForm.customerName,
-                  customerPhone: reserveForm.phone,
-                  bookingTime: reserveForm.datetime,
-                });
+                const res = await createBooking(
+                  selectedTable.id,
+                  reserveForm.customerName,
+                  reserveForm.phone,
+                  reserveForm.datetime
+                );
                 if (res.success) {
                   setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Đã đặt', customerName: reserveForm.customerName, customerPhone: reserveForm.phone, bookingTime: reserveForm.datetime } : t));
                   setIsReserveModalOpen(false);

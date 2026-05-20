@@ -307,7 +307,9 @@ async function main() {
     },
   ];
 
-  // Clear existing products to ensure clean menu
+  // Xóa sạch dữ liệu liên quan để tránh lỗi khóa ngoại
+  await prisma.orderItem.deleteMany({});
+  await prisma.order.deleteMany({});
   await prisma.product.deleteMany({});
 
   for (const p of products) {
